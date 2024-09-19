@@ -7,12 +7,13 @@ from dotenv import load_dotenv
 import subprocess
 import tempfile
 import shutil
+from flask_sqlalchemy import SQLAlchemy
 
 # Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
+CORS(app)
 
 # AWS S3 configuration
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
@@ -20,13 +21,33 @@ AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.getenv("AWS_REGION")
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
 
-# Initialize the S3 client
+# PostgreSQL Database configuration
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv("DATABASE_URL")
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# Initialize the database and S3 client
+db = SQLAlchemy(app)
+
 s3_client = boto3.client(
     's3',
     aws_access_key_id=AWS_ACCESS_KEY_ID,
     aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
     region_name=AWS_REGION
 )
+
+# Database model
+class AnimeUpload(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    anime_name = db.Column(db.String(255), nullable=False)
+    season_number = db.Column(db.String(255), nullable=False)
+    episode_number = db.Column(db.String(255), nullable=False)
+    video_links = db.Column(db.Text, nullable=False)
+    thumbnail_link = db.Column(db.String(255), nullable=False)
+    poster_link = db.Column(db.String(255))
+
+# Create the database tables
+with app.app_context():
+    db.create_all()
 
 def split_video_into_segments(video_path, segment_duration=10):
     """Splits the video into segments of specified duration using ffmpeg."""
@@ -38,25 +59,15 @@ def split_video_into_segments(video_path, segment_duration=10):
     try:
         segment_pattern = os.path.join(tempdir, 'segment_%03d.mp4')
         
-        # Log the temp directory path to ensure it's created
-        print(f"Temp directory for segments: {tempdir}")
-        
         # Use ffmpeg to split the video into segments
         result = subprocess.run([
             'ffmpeg', '-i', video_path, '-c', 'copy', '-map', '0', '-segment_time', str(segment_duration),
             '-f', 'segment', segment_pattern
         ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         
-        # Log ffmpeg output for debugging
-        print(result.stdout.decode())
-        print(result.stderr.decode())
-
         # Collect all generated segment files
         for filename in sorted(os.listdir(tempdir)):
             segments.append(os.path.join(tempdir, filename))
-        
-        # Log the created segments for debugging
-        print(f"Segments created: {segments}")
     
     except Exception as e:
         print(f"Error during ffmpeg segmentation: {e}")
@@ -93,24 +104,44 @@ def upload_files():
         # Split the video into 10-second segments
         segments = split_video_into_segments(temp_video_path, segment_duration=10)
 
-        # Upload thumbnail to S3
-        s3_client.upload_fileobj(thumbnail, S3_BUCKET_NAME, f"{anime_name}/thumbnails/{thumbnail_filename}")
+        video_links = []
 
-        # Upload each video segment to S3 with the season number, episode number, and segment index
+        # Upload each video segment to S3
         for idx, segment_path in enumerate(segments):
             segment_filename = f"s{season_number}_e{episode_number}_segment_{idx+1:03d}.mp4"
             s3_key = f"{anime_name}/seasons/{season_number}/episodes/{segment_filename}"
             s3_client.upload_file(segment_path, S3_BUCKET_NAME, s3_key)
+            video_links.append(f"https://{S3_BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{s3_key}")
 
-        # Upload poster if it exists
+        # Upload thumbnail to S3 after video segments
+        thumbnail_key = f"{anime_name}/{anime_name}_thumbnail.{thumbnail_filename.split('.')[-1]}"
+        s3_client.upload_fileobj(thumbnail, S3_BUCKET_NAME, thumbnail_key)
+        thumbnail_link = f"https://{S3_BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{thumbnail_key}"
+
+        # Upload poster if it exists after the thumbnail
+        poster_link = None
         if poster:
-            s3_client.upload_fileobj(poster, S3_BUCKET_NAME, f"{anime_name}/posters/{poster_filename}")
+            poster_key = f"{anime_name}/{anime_name}_poster.{poster_filename.split('.')[-1]}"
+            s3_client.upload_fileobj(poster, S3_BUCKET_NAME, poster_key)
+            poster_link = f"https://{S3_BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{poster_key}"
+
+        # Store all data in PostgreSQL
+        anime_upload = AnimeUpload(
+            anime_name=anime_name,
+            season_number=season_number,
+            episode_number=episode_number,
+            video_links=",".join(video_links),
+            thumbnail_link=thumbnail_link,
+            poster_link=poster_link
+        )
+        db.session.add(anime_upload)
+        db.session.commit()
 
         # Clean up the temporary video file and segment files
         os.remove(temp_video_path)
         shutil.rmtree(os.path.dirname(segments[0]))
 
-        return jsonify({'message': 'Files uploaded successfully!'}), 200
+        return jsonify({'message': 'Files uploaded and data stored successfully!'}), 200
     except Exception as e:
         print(e)
         return jsonify({'error': 'Failed to upload files'}), 500
