@@ -70,7 +70,11 @@ def upload_files():
             return jsonify({'error': 'Thumbnail and video files are required!'}), 400
 
         anime_name = request.form.get('animeName')
+        season_number = request.form.get('seasonNumber')
         episode_number = request.form.get('episodeNumber')
+
+        if not all([anime_name, season_number, episode_number]):
+            return jsonify({'error': 'Anime name, season number, and episode number are required!'}), 400
 
         thumbnail = request.files['thumbnail']
         video = request.files['video']
@@ -92,23 +96,24 @@ def upload_files():
         # Upload thumbnail to S3
         s3_client.upload_fileobj(thumbnail, S3_BUCKET_NAME, f"{anime_name}/thumbnails/{thumbnail_filename}")
 
-        # Upload each video segment to S3 with the episode number and segment index
+        # Upload each video segment to S3 with the season number, episode number, and segment index
         for idx, segment_path in enumerate(segments):
-            segment_filename = f"{episode_number}_segment_{idx+1:03d}.mp4"
-            s3_client.upload_file(segment_path, S3_BUCKET_NAME, f"{anime_name}/episodes/{segment_filename}")
+            segment_filename = f"s{season_number}_e{episode_number}_segment_{idx+1:03d}.mp4"
+            s3_key = f"{anime_name}/seasons/{season_number}/episodes/{segment_filename}"
+            s3_client.upload_file(segment_path, S3_BUCKET_NAME, s3_key)
 
         # Upload poster if it exists
         if poster:
             s3_client.upload_fileobj(poster, S3_BUCKET_NAME, f"{anime_name}/posters/{poster_filename}")
 
-        # Clean up the temporary video file
+        # Clean up the temporary video file and segment files
         os.remove(temp_video_path)
+        shutil.rmtree(os.path.dirname(segments[0]))
 
         return jsonify({'message': 'Files uploaded successfully!'}), 200
     except Exception as e:
         print(e)
         return jsonify({'error': 'Failed to upload files'}), 500
-
 
 if __name__ == '__main__':
     app.run(debug=True)
