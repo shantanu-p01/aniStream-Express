@@ -41,6 +41,8 @@ class AnimeUpload(db.Model):
     anime_name = db.Column(db.String(255), nullable=False)
     season_number = db.Column(db.String(255), nullable=False)
     episode_number = db.Column(db.String(255), nullable=False)
+    episode_name = db.Column(db.String(255))  # New field, nullable
+    description = db.Column(db.Text)  # New field, nullable
     video_links = db.Column(db.Text, nullable=False)
     thumbnail_link = db.Column(db.String(255), nullable=False)
     poster_link = db.Column(db.String(255))
@@ -83,6 +85,8 @@ def upload_files():
         anime_name = request.form.get('animeName')
         season_number = request.form.get('seasonNumber')
         episode_number = request.form.get('episodeNumber')
+        episode_name = request.form.get('episodeName')  # New field
+        description = request.form.get('description')  # New field
 
         if not all([anime_name, season_number, episode_number]):
             return jsonify({'error': 'Anime name, season number, and episode number are required!'}), 400
@@ -130,6 +134,8 @@ def upload_files():
             anime_name=anime_name,
             season_number=season_number,
             episode_number=episode_number,
+            episode_name=episode_name,  # New field
+            description=description,  # New field
             video_links=",".join(video_links),
             thumbnail_link=thumbnail_link,
             poster_link=poster_link
