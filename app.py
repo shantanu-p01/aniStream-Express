@@ -41,8 +41,8 @@ class AnimeUpload(db.Model):
     anime_name = db.Column(db.String(255), nullable=False)
     season_number = db.Column(db.String(255), nullable=False)
     episode_number = db.Column(db.String(255), nullable=False)
-    episode_name = db.Column(db.String(255))  # New field, nullable
-    description = db.Column(db.Text)  # New field, nullable
+    episode_name = db.Column(db.String(255))
+    description = db.Column(db.Text)
     video_links = db.Column(db.Text, nullable=False)
     thumbnail_link = db.Column(db.String(255), nullable=False)
     poster_link = db.Column(db.String(255))
@@ -85,20 +85,34 @@ def upload_files():
         anime_name = request.form.get('animeName')
         season_number = request.form.get('seasonNumber')
         episode_number = request.form.get('episodeNumber')
-        episode_name = request.form.get('episodeName')  # New field
-        description = request.form.get('description')  # New field
+        episode_name = request.form.get('episodeName')
+        description = request.form.get('description')
 
         if not all([anime_name, season_number, episode_number]):
             return jsonify({'error': 'Anime name, season number, and episode number are required!'}), 400
 
         thumbnail = request.files['thumbnail']
         video = request.files['video']
-        poster = request.files.get('poster')  # Optional poster
+        poster = request.files.get('poster')
 
         # Ensure filenames are secure
         thumbnail_filename = secure_filename(thumbnail.filename)
         video_filename = secure_filename(video.filename)
         poster_filename = secure_filename(poster.filename) if poster else None
+
+        # Create initial database entry with textual data
+        anime_upload = AnimeUpload(
+            anime_name=anime_name,
+            season_number=season_number,
+            episode_number=episode_number,
+            episode_name=episode_name,
+            description=description,
+            video_links="",
+            thumbnail_link="",
+            poster_link=""
+        )
+        db.session.add(anime_upload)
+        db.session.commit()
 
         # Save the uploaded video to a temporary file
         with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_video_file:
@@ -110,38 +124,36 @@ def upload_files():
 
         video_links = []
 
-        # Upload each video segment to S3
+        # Upload each video segment to S3 and update the database
         for idx, segment_path in enumerate(segments):
             segment_filename = f"s{season_number}_e{episode_number}_segment_{idx+1:03d}.mp4"
             s3_key = f"{anime_name}/seasons/{season_number}/episodes/{segment_filename}"
             s3_client.upload_file(segment_path, S3_BUCKET_NAME, s3_key)
-            video_links.append(f"https://{S3_BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{s3_key}")
+            segment_link = f"https://{S3_BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{s3_key}"
+            video_links.append(segment_link)
+            
+            # Update database with the new segment link
+            anime_upload.video_links = ",".join(video_links)
+            db.session.commit()
 
         # Upload thumbnail to S3 after video segments
         thumbnail_key = f"{anime_name}/{anime_name}_thumbnail.{thumbnail_filename.split('.')[-1]}"
         s3_client.upload_fileobj(thumbnail, S3_BUCKET_NAME, thumbnail_key)
         thumbnail_link = f"https://{S3_BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{thumbnail_key}"
+        
+        # Update database with thumbnail link
+        anime_upload.thumbnail_link = thumbnail_link
+        db.session.commit()
 
         # Upload poster if it exists after the thumbnail
-        poster_link = None
         if poster:
             poster_key = f"{anime_name}/{anime_name}_poster.{poster_filename.split('.')[-1]}"
             s3_client.upload_fileobj(poster, S3_BUCKET_NAME, poster_key)
             poster_link = f"https://{S3_BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{poster_key}"
-
-        # Store all data in PostgreSQL
-        anime_upload = AnimeUpload(
-            anime_name=anime_name,
-            season_number=season_number,
-            episode_number=episode_number,
-            episode_name=episode_name,  # New field
-            description=description,  # New field
-            video_links=",".join(video_links),
-            thumbnail_link=thumbnail_link,
-            poster_link=poster_link
-        )
-        db.session.add(anime_upload)
-        db.session.commit()
+            
+            # Update database with poster link
+            anime_upload.poster_link = poster_link
+            db.session.commit()
 
         # Clean up the temporary video file and segment files
         os.remove(temp_video_path)
