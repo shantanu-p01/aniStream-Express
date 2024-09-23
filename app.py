@@ -163,6 +163,23 @@ def upload_files():
     except Exception as e:
         print(e)
         return jsonify({'error': 'Failed to upload files'}), 500
+        
+# Fetch anime cards for the frontend
+@app.route('/anime-cards', methods=['GET'])
+def get_anime_cards():
+    try:
+        anime_list = AnimeUpload.query.all()
+        anime_cards = [
+            {
+                'title': anime.anime_name,
+                'poster': anime.poster_link,
+                'heroImage': anime.thumbnail_link
+            } for anime in anime_list
+        ]
+        return jsonify(anime_cards), 200
+    except Exception as e:
+        print(f"Error fetching anime cards: {e}")
+        return jsonify({'error': 'Failed to fetch anime cards'}), 500
 
 if __name__ == '__main__':
     app.run(debug=True)
