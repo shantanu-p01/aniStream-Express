@@ -1,4 +1,2 @@
-__pycache__
-__pycache__*
-venv
-venv/*
+node_modules
+node_modules/*
