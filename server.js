@@ -6,7 +6,8 @@ const Sequelize = require('sequelize');
 const dotenv = require('dotenv');
 const { spawn } = require('child_process');
 const path = require('path');
-const fs = require('fs');
+const fs = require('fs').promises;
+const { createCanvas, loadImage } = require('canvas');
 
 dotenv.config();
 
@@ -27,9 +28,10 @@ const s3Client = new S3Client({
 // MySQL connection
 const sequelize = new Sequelize(process.env.MYSQL_DATABASE_URI);
 
-// Create table for storing episode details, including chunk_urls
-const createTable = async () => {
-  const query = `
+// Create tables if they don't exist
+// Create tables if they don't exist
+const createTables = async () => {
+  const createAnimeEpisodesTableQuery = `
     CREATE TABLE IF NOT EXISTS anime_episodes (
       id INT AUTO_INCREMENT PRIMARY KEY,
       anime_name VARCHAR(255) NOT NULL,
@@ -38,24 +40,34 @@ const createTable = async () => {
       episode_number INT NOT NULL,
       description TEXT,
       thumbnail_url VARCHAR(255) NOT NULL,
-      chunk_urls JSON,  -- Add this column to store chunk URLs as a JSON array
+      chunk_urls JSON,
       complete_status BOOLEAN DEFAULT FALSE,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
   `;
 
   try {
-    await sequelize.query(query);
-    console.log('Checked and ensured the table "anime_episodes" exists.');
+    await sequelize.query(createAnimeEpisodesTableQuery);
+    console.log('Checked and ensured the anime_episodes table exists.');
   } catch (error) {
-    console.error('Error creating or checking the table:', error);
+    console.error('Error creating or checking the anime_episodes table:', error);
   }
 };
 
-// Upload to S3
-const uploadToS3 = async (filePath, key) => {
+// Call createTables in your server initialization code
+(async () => {
   try {
-    const fileContent = fs.readFileSync(filePath);
+    await sequelize.authenticate();
+    console.log('Database connection established.');
+    await createTables();
+  } catch (error) {
+    console.error('Database connection error:', error);
+  }
+})();
+
+// Upload to S3
+const uploadToS3 = async (fileContent, key) => {
+  try {
     const uploadParams = {
       Bucket: process.env.S3_BUCKET_NAME,
       Key: key,
@@ -66,19 +78,62 @@ const uploadToS3 = async (filePath, key) => {
     console.log(`File uploaded successfully: ${key}`);
   } catch (error) {
     console.error(`Error uploading file: ${error}`);
+    throw error;
+  }
+};
+
+// Process and flatten thumbnail
+const processThumbnail = async (inputPath) => {
+  try {
+    const image = await loadImage(inputPath);
+    const canvas = createCanvas(800, (800 / image.width) * image.height);
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+    const buffer = canvas.toBuffer('image/jpeg', { quality: 0.8 });
+    return buffer.length > 700 * 1024 ? canvas.toBuffer('image/jpeg', { quality: 0.6 }) : buffer;
+  } catch (error) {
+    console.error('Error processing thumbnail:', error);
+    throw error;
+  }
+};
+
+// Robust file deletion function
+const safeDelete = async (filePath) => {
+  try {
+    await fs.unlink(filePath);
+    console.log(`Successfully deleted: ${filePath}`);
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      console.log(`File not found, skipping delete: ${filePath}`);
+    } else {
+      console.warn(`Warning: Unable to delete file: ${filePath}`, error);
+    }
+  }
+};
+
+// Robust directory deletion function
+const safeDeleteDir = async (dirPath) => {
+  try {
+    const files = await fs.readdir(dirPath);
+    for (const file of files) {
+      const curPath = path.join(dirPath, file);
+      const stats = await fs.lstat(curPath);
+      if (stats.isDirectory()) {
+        await safeDeleteDir(curPath);
+      } else {
+        await safeDelete(curPath);
+      }
+    }
+    await fs.rmdir(dirPath);
+    console.log(`Successfully deleted directory: ${dirPath}`);
+  } catch (error) {
+    console.warn(`Warning: Unable to delete directory: ${dirPath}`, error);
   }
 };
 
 // Handle video and thumbnail upload
 app.post('/upload', async (req, res) => {
-  const {
-    animeName,
-    seasonNumber,
-    episodeNumber,
-    episodeName,
-    description,
-  } = req.body;
-
+  const { animeName, seasonNumber, episodeNumber, episodeName, description } = req.body;
   const thumbnail = req.files?.thumbnail;
   const video = req.files?.video;
 
@@ -86,98 +141,92 @@ app.post('/upload', async (req, res) => {
     return res.status(400).json({ message: 'Thumbnail and video files are required.' });
   }
 
-  try {
-    // Step 1: Check and create the table if it doesn't exist
-    await createTable();
+  const uploadsDir = path.join(__dirname, 'uploads');
+  const thumbnailDir = path.join(uploadsDir, 'thumbnail');
+  const outputDir = path.join(uploadsDir, 'episode', episodeNumber.toString());
 
-    // Step 2: Save episode details in the database with complete_status set to false
-    const insertResult = await sequelize.query(
+  try {
+    await createTables();
+
+    const insertEpisodeResult = await sequelize.query(
       'INSERT INTO anime_episodes (anime_name, episode_name, season_number, episode_number, description, complete_status) VALUES (?, ?, ?, ?, ?, ?)',
       {
-        replacements: [
-          animeName,
-          episodeName,
-          seasonNumber,
-          episodeNumber,
-          description,
-          false, // complete_status set to false initially
-        ],
+        replacements: [animeName, episodeName, seasonNumber, episodeNumber, description, false],
         type: Sequelize.QueryTypes.INSERT,
       }
     );
 
-    // Use the last inserted ID
-    const episodeId = insertResult[0];
+    const episodeId = insertEpisodeResult[0];
 
-    // Step 3: Handle thumbnail upload
-    const thumbnailDir = path.join(__dirname, 'uploads', 'thumbnail');
-    if (!fs.existsSync(thumbnailDir)) fs.mkdirSync(thumbnailDir, { recursive: true });
-    const thumbnailPath = path.join(thumbnailDir, `thumbnail-${Date.now()}.jpg`);
-    await thumbnail.mv(thumbnailPath);
+    await fs.mkdir(thumbnailDir, { recursive: true });
+    const originalThumbnailPath = path.join(thumbnailDir, `original-thumbnail-${Date.now()}.jpg`);
+    await thumbnail.mv(originalThumbnailPath);
+
+    const processedThumbnail = await processThumbnail(originalThumbnailPath);
 
     const thumbnailKey = `${animeName}/thumbnail/thumbnail-${animeName}-${episodeNumber}.jpg`;
-    await uploadToS3(thumbnailPath, thumbnailKey);
+    await uploadToS3(processedThumbnail, thumbnailKey);
 
-    // Step 4: Process and upload video chunks
-    const outputDir = path.join(__dirname, 'uploads', 'episode', episodeNumber);
-    if (!fs.existsSync(outputDir)) {
-      fs.mkdirSync(outputDir, { recursive: true });
-    }
+    const thumbnailUrl = `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${thumbnailKey}`;
 
+    await fs.mkdir(outputDir, { recursive: true });
     const tempVideoPath = path.join(outputDir, `temp-${Date.now()}.mp4`);
     await video.mv(tempVideoPath);
 
+    const hlsOutputPath = path.join(outputDir, 'output.m3u8');
     const ffmpeg = spawn('ffmpeg', [
       '-i', tempVideoPath,
-      '-c', 'copy',
-      '-map', '0',
-      '-f', 'segment',
-      '-segment_time', '10',
-      `${outputDir}/chunk-${episodeName}-%04d.mp4`
+      '-c:v', 'libx264',
+      '-c:a', 'aac',
+      '-hls_time', '10',
+      '-hls_list_size', '0',
+      '-f', 'hls',
+      hlsOutputPath
     ]);
 
-    const chunkUrls = [];
+    ffmpeg.stderr.on('data', (data) => {
+      console.error(`FFmpeg stderr: ${data}`);
+    });
 
     ffmpeg.on('close', async (code) => {
       if (code !== 0) {
-        console.error(`ffmpeg process exited with code ${code}`);
+        console.error(`FFmpeg process exited with code ${code}`);
         return res.status(500).json({ message: 'Error processing video.' });
       }
 
-      // Upload video chunks to S3
-      const files = await fs.promises.readdir(outputDir);
-      for (const file of files) {
-        if (file.startsWith('chunk')) {
-          const chunkKey = `${animeName}/episode/${episodeNumber}/${file}`;
-          await uploadToS3(path.join(outputDir, file), chunkKey);
-          chunkUrls.push(`https://${process.env.S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${chunkKey}`);
-          await fs.promises.unlink(path.join(outputDir, file)); // Delete local chunk after upload
+      try {
+        const hlsSegments = await fs.readFile(hlsOutputPath, 'utf8');
+        const segmentUrls = [];
+
+        const lines = hlsSegments.split('\n');
+        for (const line of lines) {
+          if (line && line.endsWith('.ts')) {
+            const segmentKey = `${animeName}/episode/${episodeNumber}/${line.trim()}`;
+            const segmentPath = path.join(outputDir, line.trim());
+            await uploadToS3(await fs.readFile(segmentPath), segmentKey);
+            segmentUrls.push(`https://${process.env.S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${segmentKey}`);
+          }
         }
+
+        await uploadToS3(await fs.readFile(hlsOutputPath), `${animeName}/episode/${episodeNumber}/output.m3u8`);
+
+        await sequelize.query(
+          'UPDATE anime_episodes SET thumbnail_url = ?, chunk_urls = ?, complete_status = ? WHERE id = ?',
+          {
+            replacements: [thumbnailUrl, JSON.stringify(segmentUrls), true, episodeId],
+          }
+        );
+
+        await safeDelete(tempVideoPath);
+        await safeDelete(originalThumbnailPath);
+        await safeDeleteDir(thumbnailDir);
+        await safeDeleteDir(outputDir);
+
+        res.status(200).json({ message: 'Upload successful!' });
+      } catch (error) {
+        console.error('Error in upload process:', error);
+        res.status(500).json({ message: 'Error during upload process.' });
       }
-
-      // Delete the temporary video file and thumbnail after upload
-      await fs.promises.unlink(tempVideoPath);
-      await fs.promises.unlink(thumbnailPath);
-
-      // Step 5: Update complete_status and chunk_urls to true in the database
-      await sequelize.query(
-        'UPDATE anime_episodes SET thumbnail_url = ?, chunk_urls = ?, complete_status = ? WHERE id = ?',
-        {
-          replacements: [
-            `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${thumbnailKey}`,
-            JSON.stringify(chunkUrls),
-            true, // complete_status to true
-            episodeId,
-          ],
-        }
-      );
-
-      // Delete the entire 'uploads' folder after everything is uploaded
-      const uploadsDir = path.join(__dirname, 'uploads');
-      await fs.promises.rm(uploadsDir, { recursive: true, force: true });
-
-      // Send success response
-      res.status(200).json({ message: 'Upload successful!' });
     });
   } catch (error) {
     console.error('Error in upload handler:', error);
@@ -185,19 +234,47 @@ app.post('/upload', async (req, res) => {
   }
 });
 
-// Start server and connect to the database
-const startServer = async () => {
+// Fetch anime episodes from 'anime_episodes' table
+app.get('/anime-episodes', async (req, res) => {
   try {
-    await sequelize.authenticate();
-    console.log('Database connection established.');
+    const [results] = await sequelize.query('SELECT anime_name, episode_name, season_number, episode_number, thumbnail_url FROM anime_episodes');
 
-    const PORT = process.env.PORT || 5000;
-    app.listen(PORT, () => {
-      console.log(`Server is running on port ${PORT}`);
-    });
+    if (results.length === 0) {
+      return res.status(404).json({ message: 'No anime episodes found' });
+    }
+
+    res.json(results);
   } catch (error) {
-    console.error('Unable to connect to the database:', error);
+    console.error('Error fetching anime episodes:', error);
+    res.status(500).json({ message: 'Internal server error' });
   }
-};
+});
 
-startServer();
+// Fetch all episodes for a specific anime by anime name
+app.get('/fetchAnimeDetails/:animeName', async (req, res) => {
+  const { animeName } = req.params;
+
+  try {
+    const [results] = await sequelize.query(
+      'SELECT * FROM anime_episodes WHERE LOWER(anime_name) = LOWER(?)',
+      {
+        replacements: [animeName],
+      }
+    );
+
+    if (results.length === 0) {
+      return res.status(404).json({ message: 'Anime not found' });
+    }
+
+    res.json(results);
+  } catch (error) {
+    console.error('Error fetching anime details:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Start server
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+});
