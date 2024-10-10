@@ -41,6 +41,7 @@ const createTables = async () => {
       description TEXT,
       thumbnail_url VARCHAR(255) NOT NULL,
       chunk_urls JSON,
+      m3u8_url VARCHAR(255),
       complete_status BOOLEAN DEFAULT FALSE,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
@@ -174,9 +175,14 @@ app.post('/upload', async (req, res) => {
     await video.mv(tempVideoPath);
 
     const hlsOutputPath = path.join(outputDir, 'output.m3u8');
+
+    // Optimized FFmpeg conversion for HLS
     const ffmpeg = spawn('ffmpeg', [
       '-i', tempVideoPath,
       '-c:v', 'libx264',
+      '-preset', 'ultrafast', // Speed up the conversion
+      '-tune', 'fastdecode,zerolatency', // Tune for faster decoding and low latency
+      '-threads', '4', // Increase threads for faster processing
       '-c:a', 'aac',
       '-hls_time', '10',
       '-hls_list_size', '0',
@@ -208,19 +214,25 @@ app.post('/upload', async (req, res) => {
           }
         }
 
-        await uploadToS3(await fs.readFile(hlsOutputPath), `${animeName}/episode/${episodeNumber}/output.m3u8`);
+        const m3u8Key = `${animeName}/episode/${episodeNumber}/output.m3u8`;
+        await uploadToS3(await fs.readFile(hlsOutputPath), m3u8Key);
 
+        const m3u8Url = `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${m3u8Key}`;
+
+        // Update the anime_episodes table with the m3u8 URL and chunk URLs
         await sequelize.query(
-          'UPDATE anime_episodes SET thumbnail_url = ?, chunk_urls = ?, complete_status = ? WHERE id = ?',
+          'UPDATE anime_episodes SET thumbnail_url = ?, chunk_urls = ?, complete_status = ?, m3u8_url = ? WHERE id = ?',
           {
-            replacements: [thumbnailUrl, JSON.stringify(segmentUrls), true, episodeId],
+            replacements: [thumbnailUrl, JSON.stringify(segmentUrls), true, m3u8Url, episodeId],
           }
         );
 
+        // Delete temporary files and folders
         await safeDelete(tempVideoPath);
         await safeDelete(originalThumbnailPath);
         await safeDeleteDir(thumbnailDir);
         await safeDeleteDir(outputDir);
+        await safeDeleteDir(uploadsDir); // Delete the 'uploads' folder entirely
 
         res.status(200).json({ message: 'Upload successful!' });
       } catch (error) {
@@ -228,6 +240,7 @@ app.post('/upload', async (req, res) => {
         res.status(500).json({ message: 'Error during upload process.' });
       }
     });
+
   } catch (error) {
     console.error('Error in upload handler:', error);
     res.status(500).json({ message: 'Internal server error.' });
