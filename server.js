@@ -29,7 +29,6 @@ const s3Client = new S3Client({
 const sequelize = new Sequelize(process.env.MYSQL_DATABASE_URI);
 
 // Create tables if they don't exist
-// Create tables if they don't exist
 const createTables = async () => {
   const createAnimeEpisodesTableQuery = `
     CREATE TABLE IF NOT EXISTS anime_episodes (
@@ -174,18 +173,21 @@ app.post('/upload', async (req, res) => {
     const tempVideoPath = path.join(outputDir, `temp-${Date.now()}.mp4`);
     await video.mv(tempVideoPath);
 
-    const hlsOutputPath = path.join(outputDir, 'output.m3u8');
+    const hlsOutputPath = path.join(outputDir, `${animeName}_${seasonNumber}_${episodeNumber}.m3u8`);
 
-    // Optimized FFmpeg conversion for HLS
+    // Optimized FFmpeg conversion for HLS, chunk duration 10s, max chunk size 10MB
     const ffmpeg = spawn('ffmpeg', [
       '-i', tempVideoPath,
       '-c:v', 'libx264',
-      '-preset', 'ultrafast', // Speed up the conversion
-      '-tune', 'fastdecode,zerolatency', // Tune for faster decoding and low latency
-      '-threads', '4', // Increase threads for faster processing
+      '-preset', 'ultrafast',
+      '-tune', 'fastdecode,zerolatency',
+      '-b:v', '8M', // Limit bitrate to ensure chunk size stays under 10MB
+      '-threads', '4',
       '-c:a', 'aac',
       '-hls_time', '10',
-      '-hls_list_size', '0',
+      '-hls_segment_type', 'mpegts',
+      '-hls_segment_filename', `${outputDir}/%03d.ts`,
+      '-hls_playlist_type', 'vod',
       '-f', 'hls',
       hlsOutputPath
     ]);
@@ -214,7 +216,7 @@ app.post('/upload', async (req, res) => {
           }
         }
 
-        const m3u8Key = `${animeName}/episode/${episodeNumber}/output.m3u8`;
+        const m3u8Key = `${animeName}/episode/${episodeNumber}/${animeName}_${seasonNumber}_${episodeNumber}.m3u8`;
         await uploadToS3(await fs.readFile(hlsOutputPath), m3u8Key);
 
         const m3u8Url = `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${m3u8Key}`;
@@ -232,18 +234,22 @@ app.post('/upload', async (req, res) => {
         await safeDelete(originalThumbnailPath);
         await safeDeleteDir(thumbnailDir);
         await safeDeleteDir(outputDir);
-        await safeDeleteDir(uploadsDir); // Delete the 'uploads' folder entirely
+        await safeDeleteDir(uploadsDir); // Delete the 'uploads' folder itself after processing
 
-        res.status(200).json({ message: 'Upload successful!' });
+        return res.status(200).json({
+          message: 'Video and thumbnail uploaded successfully.',
+          m3u8_url: m3u8Url,
+          thumbnail_url: thumbnailUrl,
+          chunk_urls: segmentUrls
+        });
       } catch (error) {
-        console.error('Error in upload process:', error);
-        res.status(500).json({ message: 'Error during upload process.' });
+        console.error('Error during video upload process:', error);
+        return res.status(500).json({ message: 'Error during video upload process.' });
       }
     });
-
   } catch (error) {
-    console.error('Error in upload handler:', error);
-    res.status(500).json({ message: 'Internal server error.' });
+    console.error('Error handling video and thumbnail upload:', error);
+    return res.status(500).json({ message: 'Internal server error.' });
   }
 });
 
