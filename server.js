@@ -256,7 +256,7 @@ app.post('/upload', async (req, res) => {
 // Fetch anime episodes from 'anime_episodes' table
 app.get('/anime-episodes', async (req, res) => {
   try {
-    const [results] = await sequelize.query('SELECT anime_name, episode_name, season_number, episode_number, thumbnail_url FROM anime_episodes');
+    const [results] = await sequelize.query('SELECT anime_name, episode_name, season_number, episode_number, thumbnail_url FROM anime_episodes WHERE complete_status = 1');
 
     if (results.length === 0) {
       return res.status(404).json({ message: 'No anime episodes found' });
