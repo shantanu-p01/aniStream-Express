@@ -209,14 +209,14 @@ app.post('/upload', async (req, res) => {
         const lines = hlsSegments.split('\n');
         for (const line of lines) {
           if (line && line.endsWith('.ts')) {
-            const segmentKey = `${animeName}/episode/${episodeNumber}/${line.trim()}`;
+            const segmentKey = `${animeName}/${seasonNumber}/episode/${episodeNumber}/${line.trim()}`;
             const segmentPath = path.join(outputDir, line.trim());
             await uploadToS3(await fs.readFile(segmentPath), segmentKey);
             segmentUrls.push(`https://${process.env.S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${segmentKey}`);
           }
         }
 
-        const m3u8Key = `${animeName}/episode/${episodeNumber}/${animeName}_${seasonNumber}_${episodeNumber}.m3u8`;
+        const m3u8Key = `${animeName}/${seasonNumber}/episode/${episodeNumber}/${animeName}_${seasonNumber}_${episodeNumber}.m3u8`;
         await uploadToS3(await fs.readFile(hlsOutputPath), m3u8Key);
 
         const m3u8Url = `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${m3u8Key}`;
