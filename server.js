@@ -133,13 +133,20 @@ const safeDeleteDir = async (dirPath) => {
 
 // Handle video and thumbnail upload
 app.post('/upload', async (req, res) => {
-  const { animeName, seasonNumber, episodeNumber, episodeName, description } = req.body;
+  let { animeName, seasonNumber, episodeNumber, episodeName, description } = req.body;
   const thumbnail = req.files?.thumbnail;
   const video = req.files?.video;
 
   if (!thumbnail || !video) {
     return res.status(400).json({ message: 'Thumbnail and video files are required.' });
   }
+
+  // Trim the inputs to remove leading and trailing spaces
+  animeName = animeName.trim();
+  episodeName = episodeName.trim();
+  seasonNumber = parseInt(seasonNumber.trim(), 10);
+  episodeNumber = parseInt(episodeNumber.trim(), 10);
+  description = description.trim();
 
   const uploadsDir = path.join(__dirname, 'uploads');
   const thumbnailDir = path.join(uploadsDir, 'thumbnail');
@@ -234,22 +241,17 @@ app.post('/upload', async (req, res) => {
         await safeDelete(originalThumbnailPath);
         await safeDeleteDir(thumbnailDir);
         await safeDeleteDir(outputDir);
-        await safeDeleteDir(uploadsDir); // Delete the 'uploads' folder itself after processing
 
-        return res.status(200).json({
-          message: 'Video and thumbnail uploaded successfully.',
-          m3u8_url: m3u8Url,
-          chunk_urls: segmentUrls,
-          thumbnail_url: thumbnailUrl,
-        });
+        return res.status(200).json({ message: 'Upload and processing complete.', m3u8Url });
       } catch (error) {
-        console.error('Error processing video segments:', error);
-        return res.status(500).json({ message: 'Error processing video segments.' });
+        console.error('Error in upload completion:', error);
+        return res.status(500).json({ message: 'Error completing upload.' });
       }
     });
+
   } catch (error) {
-    console.error('Error handling file upload:', error);
-    return res.status(500).json({ message: 'Error handling file upload.' });
+    console.error('Error in upload process:', error);
+    return res.status(500).json({ message: 'Internal Server Error' });
   }
 });
 
