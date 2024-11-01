@@ -167,7 +167,7 @@ app.post('/upload', async (req, res) => {
     const thumbnailKey = `${animeName}/thumbnail/thumbnail-${animeName}-${episodeNumber}.jpg`;
     await uploadToS3(processedThumbnail, thumbnailKey);
 
-    const thumbnailUrl = `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${thumbnailKey}`;
+    const thumbnailUrl = `https://${process.env.CLOUDFRONT_URL}/${thumbnailKey}`;
 
     await fs.mkdir(outputDir, { recursive: true });
     const tempVideoPath = path.join(outputDir, `temp-${Date.now()}.mp4`);
@@ -212,16 +212,16 @@ app.post('/upload', async (req, res) => {
             const segmentKey = `${animeName}/${seasonNumber}/episode/${episodeNumber}/${line.trim()}`;
             const segmentPath = path.join(outputDir, line.trim());
             await uploadToS3(await fs.readFile(segmentPath), segmentKey);
-            segmentUrls.push(`https://${process.env.S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${segmentKey}`);
+            segmentUrls.push(`https://${process.env.CLOUDFRONT_URL}/${segmentKey}`);
           }
         }
 
         const m3u8Key = `${animeName}/${seasonNumber}/episode/${episodeNumber}/${animeName}_${seasonNumber}_${episodeNumber}.m3u8`;
         await uploadToS3(await fs.readFile(hlsOutputPath), m3u8Key);
 
-        const m3u8Url = `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${m3u8Key}`;
+        const m3u8Url = `https://${process.env.CLOUDFRONT_URL}/${m3u8Key}`;
 
-        // Update the anime_episodes table with the m3u8 URL and chunk URLs
+        // Update the anime_episodes table with the CloudFront-based m3u8 URL and chunk URLs
         await sequelize.query(
           'UPDATE anime_episodes SET thumbnail_url = ?, chunk_urls = ?, complete_status = ?, m3u8_url = ? WHERE id = ?',
           {
@@ -239,17 +239,17 @@ app.post('/upload', async (req, res) => {
         return res.status(200).json({
           message: 'Video and thumbnail uploaded successfully.',
           m3u8_url: m3u8Url,
+          chunk_urls: segmentUrls,
           thumbnail_url: thumbnailUrl,
-          chunk_urls: segmentUrls
         });
       } catch (error) {
-        console.error('Error during video upload process:', error);
-        return res.status(500).json({ message: 'Error during video upload process.' });
+        console.error('Error processing video segments:', error);
+        return res.status(500).json({ message: 'Error processing video segments.' });
       }
     });
   } catch (error) {
-    console.error('Error handling video and thumbnail upload:', error);
-    return res.status(500).json({ message: 'Internal server error.' });
+    console.error('Error handling file upload:', error);
+    return res.status(500).json({ message: 'Error handling file upload.' });
   }
 });
 
