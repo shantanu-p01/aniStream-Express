@@ -39,7 +39,6 @@ const createTables = async () => {
       episode_number INT NOT NULL,
       description TEXT,
       thumbnail_url VARCHAR(255) NOT NULL,
-      chunk_urls JSON,
       m3u8_url VARCHAR(255),
       complete_status BOOLEAN DEFAULT FALSE,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -228,11 +227,11 @@ app.post('/upload', async (req, res) => {
 
         const m3u8Url = `https://${process.env.CLOUDFRONT_URL}/${m3u8Key}`;
 
-        // Update the anime_episodes table with the CloudFront-based m3u8 URL and chunk URLs
+        // Update the anime_episodes table with the CloudFront-based m3u8 URL
         await sequelize.query(
-          'UPDATE anime_episodes SET thumbnail_url = ?, chunk_urls = ?, complete_status = ?, m3u8_url = ? WHERE id = ?',
+          'UPDATE anime_episodes SET thumbnail_url = ?, complete_status = ?, m3u8_url = ? WHERE id = ?',
           {
-            replacements: [thumbnailUrl, JSON.stringify(segmentUrls), true, m3u8Url, episodeId],
+            replacements: [thumbnailUrl, true, m3u8Url, episodeId],
           }
         );
 
