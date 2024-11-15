@@ -181,16 +181,14 @@ app.post('/upload', async (req, res) => {
 
     const hlsOutputPath = path.join(outputDir, `${animeName}_${seasonNumber}_${episodeNumber}.m3u8`);
 
-    // Optimized FFmpeg conversion for HLS, chunk duration 10s, max chunk size 10MB
+    // Optimized FFmpeg conversion for HLS, with CRF for better file size control
     const ffmpeg = spawn('ffmpeg', [
       '-i', tempVideoPath,
       '-c:v', 'libx264',
-      '-preset', 'ultrafast',
-      '-tune', 'fastdecode,zerolatency',
-      '-b:v', '8M', // Limit bitrate to ensure chunk size stays under 10MB
-      '-threads', '4',
+      '-preset', 'medium', // Adjust encoding speed/quality tradeoff
+      '-crf', '23', // Constant rate factor for dynamic bitrate control
       '-c:a', 'aac',
-      '-hls_time', '10',
+      '-hls_time', '10', // Duration of each HLS segment
       '-hls_segment_type', 'mpegts',
       '-hls_segment_filename', `${outputDir}/%03d.ts`,
       '-hls_playlist_type', 'vod',
@@ -270,20 +268,20 @@ app.get('/anime-episodes', async (req, res) => {
   }
 });
 
-// Fetch all episodes for a specific anime by anime name
+// Fetch all episodes for a specific anime by anime name where complete_status = 1
 app.get('/fetchAnimeDetails/:animeName', async (req, res) => {
   const { animeName } = req.params;
 
   try {
     const [results] = await sequelize.query(
-      'SELECT * FROM anime_episodes WHERE LOWER(anime_name) = LOWER(?)',
+      'SELECT * FROM anime_episodes WHERE LOWER(anime_name) = LOWER(?) AND complete_status = 1',
       {
         replacements: [animeName],
       }
     );
 
     if (results.length === 0) {
-      return res.status(404).json({ message: 'Anime not found' });
+      return res.status(404).json({ message: 'No completed episodes found for the specified anime.' });
     }
 
     res.json(results);
