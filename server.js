@@ -12,7 +12,13 @@ const { createCanvas, loadImage } = require('canvas');
 dotenv.config();
 
 const app = express();
-app.use(cors());
+
+app.use(cors({
+  origin: 'https://frontend.kubez.cloud', // Allow only your frontend domain
+  methods: ['GET', 'POST', 'PUT', 'DELETE'], // Allow necessary HTTP methods
+  credentials: true, // Include credentials if needed
+}));
+
 app.use(express.json());
 app.use(fileUpload({ useTempFiles: true, tempFileDir: '/tmp/' }));
 
@@ -185,8 +191,8 @@ app.post('/upload', async (req, res) => {
     const ffmpeg = spawn('ffmpeg', [
       '-i', tempVideoPath,
       '-c:v', 'libx264',
-      '-preset', 'medium', // Adjust encoding speed/quality tradeoff
-      '-crf', '23', // Constant rate factor for dynamic bitrate control
+      '-preset', 'veryfast', // Faster preset
+      '-crf', '23', // Slightly reduced quality
       '-c:a', 'aac',
       '-hls_time', '10', // Duration of each HLS segment
       '-hls_segment_type', 'mpegts',
