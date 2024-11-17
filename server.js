@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const fileUpload = require('express-fileupload');
-const { S3Client, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, DeleteObjectCommand, DeleteObjectsCommand, ListObjectsV2Command } = require('@aws-sdk/client-s3');
 const Sequelize = require('sequelize');
 const dotenv = require('dotenv');
 const { spawn } = require('child_process');
@@ -176,7 +176,7 @@ app.post('/upload', async (req, res) => {
 
     const processedThumbnail = await processThumbnail(originalThumbnailPath);
 
-    const thumbnailKey = `${animeName}/thumbnail.jpg`; // Changed to .jpg for simplicity
+    const thumbnailKey = `${animeName}/thumbnail-s${seasonNumber}-ep${episodeNumber}.jpg`; // Changed to .jpg for simplicity
     await uploadToS3(processedThumbnail, thumbnailKey);
 
     const thumbnailUrl = `https://${process.env.CLOUDFRONT_URL}/${thumbnailKey}`;
@@ -285,6 +285,84 @@ app.post('/upload', async (req, res) => {
   }
 });
 
+// Delete episode
+app.delete('/delete-episode', async (req, res) => {
+  const { animeName, seasonNumber, episodeNumber } = req.body;
+
+  if (!animeName || !seasonNumber || !episodeNumber) {
+    return res.status(400).json({ message: 'animeName, seasonNumber, and episodeNumber are required.' });
+  }
+
+  try {
+    // Find the episode in the database
+    const [episode] = await sequelize.query(
+      'SELECT * FROM anime_episodes WHERE anime_name = ? AND season_number = ? AND episode_number = ?',
+      {
+        replacements: [animeName, seasonNumber, episodeNumber],
+        type: Sequelize.QueryTypes.SELECT,
+      }
+    );
+
+    if (!episode) {
+      return res.status(404).json({ message: 'Episode not found.' });
+    }
+
+    // Log the episode details
+    console.log('Episode to delete:', episode);
+
+    // Prepare S3 keys for the episode
+    const thumbnailKey = episode.thumbnail_url.split(`https://${process.env.CLOUDFRONT_URL}/`)[1]; // Extract the S3 key
+    const episodePrefix = `${animeName}/season-${seasonNumber}/episode-${episodeNumber}/`;
+
+    // Remove the thumbnail file from S3
+    if (thumbnailKey) {
+      try {
+        await s3Client.send(new DeleteObjectCommand({
+          Bucket: process.env.S3_BUCKET_NAME,
+          Key: thumbnailKey,
+        }));
+        console.log(`Deleted thumbnail: ${thumbnailKey}`);
+      } catch (error) {
+        console.warn(`Failed to delete thumbnail: ${thumbnailKey}`, error);
+      }
+    }
+
+    // List and delete all files in the episode folder from S3
+    const listObjectsCommand = {
+      Bucket: process.env.S3_BUCKET_NAME,
+      Prefix: episodePrefix,
+    };
+
+    const { Contents: objects } = await s3Client.send(new ListObjectsV2Command(listObjectsCommand));
+
+    if (objects && objects.length > 0) {
+      const deleteObjectsCommand = {
+        Bucket: process.env.S3_BUCKET_NAME,
+        Delete: {
+          Objects: objects.map((obj) => ({ Key: obj.Key })),
+        },
+      };
+
+      await s3Client.send(new DeleteObjectsCommand(deleteObjectsCommand));
+      console.log(`Deleted all files under prefix: ${episodePrefix}`);
+    }
+
+    // Delete episode record from the database
+    await sequelize.query(
+      'DELETE FROM anime_episodes WHERE id = ?',
+      {
+        replacements: [episode.id],
+      }
+    );
+
+    return res.status(200).json({ message: 'Episode and associated files deleted successfully.' });
+
+  } catch (error) {
+    console.error('Error deleting episode:', error);
+    return res.status(500).json({ message: 'Internal server error.' });
+  }
+});
+
 // Fetch anime episodes from 'anime_episodes' table
 app.get('/anime-episodes', async (req, res) => {
   try {
@@ -321,141 +399,6 @@ app.get('/fetchAnimeDetails/:animeName', async (req, res) => {
   } catch (error) {
     console.error('Error fetching anime details:', error);
     res.status(500).json({ message: 'Internal server error' });
-  }
-});
-
-// Update episode details
-app.put('/update-episode', async (req, res) => {
-  const { 
-    animeName, 
-    episodeName, 
-    seasonNumber, 
-    episodeNumber, 
-    newAnimeName, 
-    newEpisodeName, 
-    newSeasonNumber, 
-    newEpisodeNumber 
-  } = req.body;
-
-  // Ensure all required fields are provided
-  if (!animeName || !episodeName || !seasonNumber || !episodeNumber || !newAnimeName || !newEpisodeName || !newSeasonNumber || !newEpisodeNumber) {
-    return res.status(400).json({ message: 'All fields are required' });
-  }
-
-  try {
-    // Find the episode in the database based on anime name, season number, and episode number
-    const [episode] = await sequelize.query(
-      'SELECT * FROM anime_episodes WHERE anime_name = ? AND season_number = ? AND episode_number = ?',
-      {
-        replacements: [animeName, seasonNumber, episodeNumber],
-        type: Sequelize.QueryTypes.SELECT,
-      }
-    );
-
-    if (!episode) {
-      return res.status(404).json({ message: 'Episode not found' });
-    }
-
-    // Construct the old and new S3 paths for the updated episode
-    const oldThumbnailKey = `${animeName}/thumbnail/thumbnail-${animeName}-${episodeNumber}.jpg`;
-    const newThumbnailKey = `${newAnimeName}/thumbnail/thumbnail-${newAnimeName}-${newEpisodeNumber}.jpg`;
-
-    const oldVideoKey = `${animeName}/${seasonNumber}/episode/${episodeNumber}/${animeName}_${seasonNumber}_${episodeNumber}.m3u8`;
-    const newVideoKey = `${newAnimeName}/${newSeasonNumber}/episode/${newEpisodeNumber}/${newAnimeName}_${newSeasonNumber}_${newEpisodeNumber}.m3u8`;
-
-    // Update the episode details in the RDS
-    await sequelize.query(
-      'UPDATE anime_episodes SET anime_name = ?, episode_name = ?, season_number = ?, episode_number = ? WHERE anime_name = ? AND episode_number = ? AND season_number = ?',
-      {
-        replacements: [newAnimeName, newEpisodeName, newSeasonNumber, newEpisodeNumber, animeName, episodeNumber, seasonNumber],
-      }
-    );
-
-    // Rename the S3 paths (update the keys for both thumbnail and video files)
-    await s3Client.send(new PutObjectCommand({
-      Bucket: process.env.S3_BUCKET_NAME,
-      Key: newThumbnailKey,
-      CopySource: `${process.env.S3_BUCKET_NAME}/${oldThumbnailKey}`,
-    }));
-
-    await s3Client.send(new PutObjectCommand({
-      Bucket: process.env.S3_BUCKET_NAME,
-      Key: newVideoKey,
-      CopySource: `${process.env.S3_BUCKET_NAME}/${oldVideoKey}`,
-    }));
-
-    // After renaming, delete the old files from S3
-    await s3Client.send(new DeleteObjectCommand({
-      Bucket: process.env.S3_BUCKET_NAME,
-      Key: oldThumbnailKey,
-    }));
-
-    await s3Client.send(new DeleteObjectCommand({
-      Bucket: process.env.S3_BUCKET_NAME,
-      Key: oldVideoKey,
-    }));
-
-    return res.status(200).json({ message: 'Episode updated successfully' });
-
-  } catch (error) {
-    console.error('Error updating episode:', error);
-    return res.status(500).json({ message: 'Internal server error' });
-  }
-});
-
-// Delete episode
-app.delete('/delete-episode', async (req, res) => {
-  const { animeName, seasonNumber, episodeNumber } = req.body;
-
-  if (!animeName || !seasonNumber || !episodeNumber) {
-    return res.status(400).json({ message: 'animeName, seasonNumber, and episodeNumber are required' });
-  }
-
-  try {
-    // Find the episode in the database
-    const [episode] = await sequelize.query(
-      'SELECT * FROM anime_episodes WHERE anime_name = ? AND season_number = ? AND episode_number = ?',
-      {
-        replacements: [animeName, seasonNumber, episodeNumber],
-        type: Sequelize.QueryTypes.SELECT,
-      }
-    );
-
-    if (!episode) {
-      return res.status(404).json({ message: 'Episode not found' });
-    }
-
-    // Log the episode to check if it's the right one
-    console.log("Episode to delete:", episode);
-
-    // Delete episode record from the RDS
-    await sequelize.query(
-      'DELETE FROM anime_episodes WHERE id = ?',
-      {
-        replacements: [episode.id],
-      }
-    );
-
-    // Delete corresponding files from S3
-    const thumbnailKey = `${animeName}/thumbnail/thumbnail-${animeName}-${episodeNumber}.jpg`;
-    const videoKey = `${animeName}/${seasonNumber}/episode/${episodeNumber}/${animeName}_${seasonNumber}_${episodeNumber}.m3u8`;
-
-    // Remove S3 files
-    await s3Client.send(new DeleteObjectCommand({
-      Bucket: process.env.S3_BUCKET_NAME,
-      Key: thumbnailKey,
-    }));
-
-    await s3Client.send(new DeleteObjectCommand({
-      Bucket: process.env.S3_BUCKET_NAME,
-      Key: videoKey,
-    }));
-
-    return res.status(200).json({ message: 'Episode deleted successfully' });
-
-  } catch (error) {
-    console.error('Error deleting episode:', error);
-    return res.status(500).json({ message: 'Internal server error' });
   }
 });
 
