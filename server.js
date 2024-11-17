@@ -176,7 +176,7 @@ app.post('/upload', async (req, res) => {
 
     const processedThumbnail = await processThumbnail(originalThumbnailPath);
 
-    const thumbnailKey = `${animeName}/thumbnail/thumbnail-${animeName}-${episodeNumber}.jpg`;
+    const thumbnailKey = `${animeName}/thumbnail.jpg`; // Changed to .jpg for simplicity
     await uploadToS3(processedThumbnail, thumbnailKey);
 
     const thumbnailUrl = `https://${process.env.CLOUDFRONT_URL}/${thumbnailKey}`;
@@ -185,7 +185,7 @@ app.post('/upload', async (req, res) => {
     const tempVideoPath = path.join(outputDir, `temp-${Date.now()}.mp4`);
     await video.mv(tempVideoPath);
 
-    const hlsOutputPath = path.join(outputDir, `${animeName}_${seasonNumber}_${episodeNumber}.m3u8`);
+    const hlsOutputPath = path.join(outputDir, `${animeName}_s${seasonNumber}_ep${episodeNumber}.m3u8`);
 
     // Optimized FFmpeg conversion for HLS, with CRF for better file size control
     const ffmpeg = spawn('ffmpeg', [
@@ -211,46 +211,73 @@ app.post('/upload', async (req, res) => {
         console.error(`FFmpeg process exited with code ${code}`);
         return res.status(500).json({ message: 'Error processing video.' });
       }
-
+    
       try {
-        const hlsSegments = await fs.readFile(hlsOutputPath, 'utf8');
         const segmentUrls = [];
-
+        const hlsSegments = await fs.readFile(hlsOutputPath, 'utf8');
         const lines = hlsSegments.split('\n');
+        let segmentIndex = 0;
+        const updatedM3U8Lines = [];
+    
         for (const line of lines) {
-          if (line && line.endsWith('.ts')) {
-            const segmentKey = `${animeName}/${seasonNumber}/episode/${episodeNumber}/${line.trim()}`;
-            const segmentPath = path.join(outputDir, line.trim());
-            await uploadToS3(await fs.readFile(segmentPath), segmentKey);
+          if (line.trim().endsWith('.ts')) {
+            // Zero-pad the segment index
+            const paddedIndex = segmentIndex.toString().padStart(6, '0'); // e.g., "000000"
+            const renamedSegment = `${paddedIndex}.ts`;
+    
+            // Update the m3u8 reference
+            updatedM3U8Lines.push(renamedSegment);
+    
+            // Read the original segment and rename locally
+            const originalSegmentPath = path.join(outputDir, line.trim());
+            const renamedSegmentPath = path.join(outputDir, renamedSegment);
+            await fs.rename(originalSegmentPath, renamedSegmentPath);
+    
+            // Upload the renamed segment to S3
+            const segmentKey = `${animeName}/season-${seasonNumber}/episode-${episodeNumber}/${renamedSegment}`;
+            const segmentData = await fs.readFile(renamedSegmentPath);
+            await uploadToS3(segmentData, segmentKey);
+    
+            // Generate CloudFront URL for the segment
             segmentUrls.push(`https://${process.env.CLOUDFRONT_URL}/${segmentKey}`);
+    
+            segmentIndex++;
+          } else {
+            // Retain non-TS lines (e.g., EXTINF and headers) in the updated M3U8
+            updatedM3U8Lines.push(line);
           }
         }
-
-        const m3u8Key = `${animeName}/${seasonNumber}/episode/${episodeNumber}/${animeName}_${seasonNumber}_${episodeNumber}.m3u8`;
-        await uploadToS3(await fs.readFile(hlsOutputPath), m3u8Key);
-
+    
+        // Save the updated .m3u8 file locally
+        const updatedM3U8Content = updatedM3U8Lines.join('\n');
+        await fs.writeFile(hlsOutputPath, updatedM3U8Content);
+    
+        // Upload the updated .m3u8 file to S3
+        const m3u8Key = `${animeName}/season-${seasonNumber}/episode-${episodeNumber}/${animeName}-s${seasonNumber}-ep${episodeNumber}.m3u8`;
+        await uploadToS3(updatedM3U8Content, m3u8Key);
+    
         const m3u8Url = `https://${process.env.CLOUDFRONT_URL}/${m3u8Key}`;
-
-        // Update the anime_episodes table with the CloudFront-based m3u8 URL
+    
+        // Update the database with the CloudFront-based m3u8 URL
         await sequelize.query(
           'UPDATE anime_episodes SET thumbnail_url = ?, complete_status = ?, m3u8_url = ? WHERE id = ?',
           {
             replacements: [thumbnailUrl, true, m3u8Url, episodeId],
           }
         );
-
+    
         // Delete temporary files and folders
         await safeDelete(tempVideoPath);
         await safeDelete(originalThumbnailPath);
         await safeDeleteDir(thumbnailDir);
         await safeDeleteDir(outputDir);
-
+    
         return res.status(200).json({ message: 'Upload and processing complete.', m3u8Url });
       } catch (error) {
         console.error('Error in upload completion:', error);
         return res.status(500).json({ message: 'Error completing upload.' });
       }
-    });
+    });    
 
   } catch (error) {
     console.error('Error in upload process:', error);
