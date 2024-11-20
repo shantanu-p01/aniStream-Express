@@ -116,15 +116,12 @@ router.post('/login', async (req, res) => {
     user.token = token;
     await user.save();
 
-    // Set the token as an HTTP-only cookie
-    res.cookie('token', token, {
-      secure: false,  // Always insecure, requires HTTP
-      httpOnly: true,  // Ensure the cookie is not accessible via JavaScript (security best practice)
-      maxAge: 3600000, // 1 hour in milliseconds
-      sameSite: 'strict'
+    // Send the token in the response
+    res.status(200).json({ 
+      message: 'Login successful.',
+      token: token,
+      name: user.username
     });
-
-    res.status(200).json({ message: 'Login successful.' });
   } catch (error) {
     console.error('Error logging in user:', error);
     res.status(500).json({ message: 'Internal server error.' });
