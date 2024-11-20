@@ -25,7 +25,9 @@ const User = mongoose.model('User', userSchema);
 
 // Check authentication and return user data
 router.get('/check-auth', async (req, res) => {
-  const token = req.cookies.token;
+  // Get token from Authorization header
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1]; // Extract the token from "Bearer token"
 
   if (!token) {
     return res.status(401).json({ message: 'No token provided.' });
