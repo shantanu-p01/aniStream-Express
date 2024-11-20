@@ -16,7 +16,7 @@ dotenv.config();
 const app = express();
 
 const corsOptions = {
-  origin: 'http://localhost:5173', // your frontend URL
+  origin: 'https://anistream.kubez.cloud', // your frontend URL
   methods: ['GET', 'POST', 'PUT', 'DELETE'], // allow required methods
   allowedHeaders: ['Content-Type', 'Authorization'], // allow headers
   credentials: true, // allow credentials (cookies, authorization headers)
