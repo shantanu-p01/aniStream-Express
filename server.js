@@ -8,21 +8,31 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs').promises;
 const { createCanvas, loadImage } = require('canvas');
+const mongoose = require('mongoose');
+const authRoutes = require('./auth'); // Import authentication routes
 
 dotenv.config();
 
 const app = express();
 
-app.use(cors({
-  origin: '*', // Allow only your frontend domain
-  methods: ['GET', 'POST', 'PUT', 'DELETE'], // Allow necessary HTTP methods
-  credentials: true, // Include credentials if needed
-}));
+const corsOptions = {
+  origin: 'http://localhost:5173', // your frontend URL
+  methods: ['GET', 'POST', 'PUT', 'DELETE'], // allow required methods
+  allowedHeaders: ['Content-Type', 'Authorization'], // allow headers
+  credentials: true, // allow credentials (cookies, authorization headers)
+};
+
+app.use(cors(corsOptions));  // Use CORS with the specified options
 
 app.use(express.json());
 app.use(fileUpload({ useTempFiles: true, tempFileDir: '/tmp/' }));
 
-// AWS S3 configuration
+// MongoDB connection
+mongoose.connect(process.env.MONGO_URI)
+  .then(() => console.log('MongoDB connected'))
+  .catch((err) => console.error('Error connecting to MongoDB:', err));
+
+// Import AWS S3 configuration and Sequelize (MySQL) as before
 const s3Client = new S3Client({
   region: process.env.AWS_REGION,
   credentials: {
@@ -30,6 +40,8 @@ const s3Client = new S3Client({
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
   },
 });
+
+app.use('/auth', authRoutes);
 
 // MySQL connection
 const sequelize = new Sequelize(process.env.MYSQL_DATABASE_URI);
