@@ -18,6 +18,7 @@ const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
   token: { type: String }, // Store JWT token here
+  isAdmin: { type: Number, default: 0 }, // isAdmin field is now an integer (0 means user, 1113 or 1134 means admin)
 });
 
 const User = mongoose.model('User', userSchema);
@@ -33,7 +34,7 @@ const authenticateToken = async (req, res, next) => {
   try {
     // Verify the JWT token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    
+
     // Check if token exists in the database
     const user = await User.findById(decoded.userId);
     if (!user || user.token !== token) {
@@ -41,6 +42,13 @@ const authenticateToken = async (req, res, next) => {
     }
 
     req.user = user; // Attach user data to request
+
+    // Check if the user is an admin (admin values are 1113 or 1134)
+    // Send admin status to the frontend
+    if (user.isAdmin === 1113 || user.isAdmin === 1134) {
+        return res.status(200).json({ status: 'authenticated', username: req.user.username, isAdmin: true });
+      }
+
     next();
   } catch (error) {
     console.error('Token verification failed:', error);
@@ -67,7 +75,7 @@ router.post('/register', async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    // Create and save the new user
+    // Create and save the new user (no isAdmin field here, default is 0)
     const user = new User({ username, email, password: hashedPassword });
     await user.save();
 
@@ -110,10 +118,10 @@ router.post('/login', async (req, res) => {
 
     // Set the token as an HTTP-only cookie
     res.cookie('token', token, {
-        secure: true,  // Always secure, requires HTTPS
-        httpOnly: true,  // Ensure the cookie is not accessible via JavaScript (security best practice)
-        maxAge: 3600000, // 1 hour in milliseconds
-      });      
+      secure: true,  // Always secure, requires HTTPS
+      httpOnly: true,  // Ensure the cookie is not accessible via JavaScript (security best practice)
+      maxAge: 3600000, // 1 hour in milliseconds
+    });
 
     res.status(200).json({ message: 'Login successful.' });
   } catch (error) {
