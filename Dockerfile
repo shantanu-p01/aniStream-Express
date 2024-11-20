@@ -1,37 +1,44 @@
 # Stage 1: Build dependencies
-FROM node:20.18-slim AS build
+FROM node:20.18-alpine AS build
 
 # Install necessary build tools for canvas and ffmpeg
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apk add --no-cache \
     ffmpeg \
-    build-essential \
-    libcairo2-dev \
-    libjpeg-dev \
-    libpango1.0-dev \
-    libgif-dev \
-    librsvg2-dev \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    build-base \
+    cairo-dev \
+    jpeg-dev \
+    pango-dev \
+    giflib-dev \
+    librsvg-dev
 
 WORKDIR /app
 
-COPY package.json /app
-RUN npm install
+# Copy package.json and install dependencies
+COPY package.json package-lock.json /app/
+RUN npm ci
 
-# Copy the application source code
+# Copy application source code
 COPY . /app
 
 # Stage 2: Production runtime
-FROM node:20.18-slim
+FROM node:20.18-alpine
 
 WORKDIR /app
 
-# Install ffmpeg in the runtime image
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Install runtime dependencies
+RUN apk add --no-cache \
     ffmpeg \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    cairo \
+    jpeg \
+    pango \
+    giflib \
+    librsvg
 
-# Copy only the necessary files from the build stage
+# Copy built application and dependencies from build stage
 COPY --from=build /app /app
+
+# Install only production dependencies
+RUN npm prune --production
 
 EXPOSE 5000
 
