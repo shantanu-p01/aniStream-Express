@@ -46,7 +46,7 @@ const authenticateToken = async (req, res, next) => {
     // Check if the user is an admin (admin values are 1113 or 1134)
     // Send admin status to the frontend
     if (user.isAdmin === 1113 || user.isAdmin === 1134) {
-        return res.status(200).json({ status: 'authenticated', username: req.user.username, isAdmin: true });
+        return res.status(200).json({ status: 'authenticated', username: req.user.username, email: req.user.email, isAdmin: true });
       }
 
     next();
@@ -138,7 +138,7 @@ router.post('/logout', (req, res) => {
 
 // Check user authentication status
 router.get('/status', authenticateToken, (req, res) => {
-  res.status(200).json({ status: 'authenticated', username: req.user.username });
+  res.status(200).json({ status: 'authenticated', username: req.user.username, email: req.user.email });
 });
 
 module.exports = router;
