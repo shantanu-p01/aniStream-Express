@@ -10,6 +10,7 @@ const fs = require('fs').promises;
 const { createCanvas, loadImage } = require('canvas');
 const mongoose = require('mongoose');
 const authRoutes = require('./auth'); // Import authentication routes
+const cron = require('node-cron');
 
 dotenv.config();
 
@@ -46,6 +47,33 @@ app.use('/auth', authRoutes);
 // MySQL connection
 const sequelize = new Sequelize(process.env.MYSQL_DATABASE_URI);
 
+let connectionEstablished = false;
+
+// Cron job to check RDS database connection every 1 minute
+const cronJob = cron.schedule('* * * * *', async () => {
+  console.log('Checking RDS database connection...');
+
+  try {
+    await sequelize.authenticate();
+    console.log('Database connected successfully.');
+
+    // Stop the cron job once the connection is established
+    connectionEstablished = true;
+    cronJob.stop();
+    console.log('Cron job stopped as the RDS database connection is established.');
+  } catch (error) {
+    console.error('RDS Database connection failed. Retrying in 1 minute...');
+    // console.error('RDS Database connection failed. Retrying in 1 minute...', error);
+  }
+}, {
+  scheduled: true,
+});
+
+// Start the cron job if not connected
+if (!connectionEstablished) {
+  cronJob.start();
+}
+
 // Create tables if they don't exist
 const createTables = async () => {
   const createAnimeEpisodesTableQuery = `
@@ -75,10 +103,11 @@ const createTables = async () => {
 (async () => {
   try {
     await sequelize.authenticate();
-    console.log('Database connection established.');
+    console.log('RDS Database connection established.');
     await createTables();
   } catch (error) {
-    console.error('Database connection error:', error);
+    console.error('RDS Database connection error');
+    // console.error('RDS Database connection error', error);
   }
 })();
 
