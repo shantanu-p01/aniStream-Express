@@ -17,7 +17,7 @@ dotenv.config();
 const app = express();
 
 const corsOptions = {
-  origin: 'https://anistream.kubez.cloud', // your frontend URL
+  origin: 'http://192.168.101.70:5173', // your frontend URL
   methods: ['GET', 'POST', 'PUT', 'DELETE'], // allow required methods
   allowedHeaders: ['Content-Type', 'Authorization'], // allow headers
   credentials: true, // allow credentials (cookies, authorization headers)
@@ -49,30 +49,52 @@ const sequelize = new Sequelize(process.env.MYSQL_DATABASE_URI);
 
 let connectionEstablished = false;
 
-// Cron job to check RDS database connection every 1 minute
-const cronJob = cron.schedule('* * * * *', async () => {
+// Cron job to retry RDS database connection
+const retryCronJob = cron.schedule('* * * * *', async () => {
   console.log('Checking RDS database connection...');
 
   try {
     await sequelize.authenticate();
     console.log('Database connected successfully.');
 
-    // Stop the cron job once the connection is established
+    // Stop the retry cron job once the connection is established
     connectionEstablished = true;
-    cronJob.stop();
-    console.log('Cron job stopped as the RDS database connection is established.');
+    retryCronJob.stop();
+    console.log('Retry Cron job stopped as the RDS database connection is established.');
+
+    // Start the monitor cron job
+    monitorCronJob.start();
+    console.log('Monitor Cron job started to keep an eye on the connection.');
   } catch (error) {
     console.error('RDS Database connection failed. Retrying in 1 minute...');
-    // console.error('RDS Database connection failed. Retrying in 1 minute...', error);
   }
 }, {
-  scheduled: true,
+  scheduled: false, // Start explicitly only when required
 });
 
-// Start the cron job if not connected
-if (!connectionEstablished) {
-  cronJob.start();
-}
+// Cron job to monitor the RDS database connection
+const monitorCronJob = cron.schedule('* * * * *', async () => {
+  console.log('Monitoring RDS database connection...');
+
+  try {
+    await sequelize.authenticate();
+    console.log('Database connection is still active.');
+  } catch (error) {
+    console.error('Database connection lost. Re-activating Retry Cron job...');
+    
+    // Stop the monitor cron job and start retrying
+    monitorCronJob.stop();
+    connectionEstablished = false;
+    retryCronJob.start();
+    console.log('Retry Cron job reactivated to reconnect the database.');
+  }
+}, {
+  scheduled: false, // Start explicitly after successful connection
+});
+
+// Start the retry cron job on application start
+console.log('Initializing database connection...');
+retryCronJob.start();
 
 // Create tables if they don't exist
 const createTables = async () => {
