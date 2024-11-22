@@ -108,6 +108,7 @@ const createTables = async () => {
       description TEXT,
       thumbnail_url VARCHAR(255) NOT NULL,
       m3u8_url VARCHAR(255),
+      categories TEXT,
       complete_status BOOLEAN DEFAULT FALSE,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
@@ -201,7 +202,7 @@ const safeDeleteDir = async (dirPath) => {
 
 // Handle video and thumbnail upload
 app.post('/upload', async (req, res) => {
-  let { animeName, seasonNumber, episodeNumber, episodeName, description } = req.body;
+  let { animeName, seasonNumber, episodeNumber, episodeName, description, categories } = req.body;
   const thumbnail = req.files?.thumbnail;
   const video = req.files?.video;
 
@@ -215,6 +216,7 @@ app.post('/upload', async (req, res) => {
   seasonNumber = parseInt(seasonNumber.trim(), 10);
   episodeNumber = parseInt(episodeNumber.trim(), 10);
   description = description.trim();
+  categories = categories || [];
 
   const uploadsDir = path.join(__dirname, 'uploads');
   const thumbnailDir = path.join(uploadsDir, 'thumbnail');
@@ -224,9 +226,9 @@ app.post('/upload', async (req, res) => {
     await createTables();
 
     const insertEpisodeResult = await sequelize.query(
-      'INSERT INTO anime_episodes (anime_name, episode_name, season_number, episode_number, description, complete_status) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT INTO anime_episodes (anime_name, episode_name, season_number, episode_number, description, categories, complete_status) VALUES (?, ?, ?, ?, ?, ?, ?)',
       {
-        replacements: [animeName, episodeName, seasonNumber, episodeNumber, description, false],
+        replacements: [animeName, episodeName, seasonNumber, episodeNumber, description, JSON.stringify(categories), false],
         type: Sequelize.QueryTypes.INSERT,
       }
     );
@@ -323,9 +325,9 @@ app.post('/upload', async (req, res) => {
     
         // Update the database with the CloudFront-based m3u8 URL
         await sequelize.query(
-          'UPDATE anime_episodes SET thumbnail_url = ?, complete_status = ?, m3u8_url = ? WHERE id = ?',
+          'UPDATE anime_episodes SET thumbnail_url = ?, complete_status = ?, m3u8_url = ?, categories = ? WHERE id = ?',
           {
-            replacements: [thumbnailUrl, true, m3u8Url, episodeId],
+            replacements: [thumbnailUrl, true, m3u8Url, JSON.stringify(categories), episodeId],
           }
         );
     
@@ -429,13 +431,19 @@ app.delete('/delete-episode', async (req, res) => {
 // Fetch anime episodes from 'anime_episodes' table
 app.get('/anime-episodes', async (req, res) => {
   try {
-    const [results] = await sequelize.query('SELECT anime_name, episode_name, season_number, episode_number, thumbnail_url FROM anime_episodes WHERE complete_status = 1');
+    const [results] = await sequelize.query('SELECT anime_name, episode_name, season_number, episode_number, thumbnail_url, categories FROM anime_episodes WHERE complete_status = 1');
 
     if (results.length === 0) {
       return res.status(404).json({ message: 'No anime episodes found' });
     }
 
-    res.json(results);
+    // Parse categories from JSON string and include it in the response
+    const episodes = results.map((episode) => ({
+      ...episode,
+      categories: JSON.parse(episode.categories),  // Convert categories from JSON string to array
+    }));
+
+    res.json(episodes);
   } catch (error) {
     console.error('Error fetching anime episodes:', error);
     res.status(500).json({ message: 'Internal server error' });
